@@ -8,7 +8,7 @@
 pub use super::artifact_content::ArtifactContent;
 use super::build_ir::SourceHashes;
 use crate::config::{Config, ProjectConfig};
-use crate::path_for_artifact;
+use crate::{create_path_for_artifact, path_for_artifact};
 use common::{NamedItem, SourceLocationKey};
 use fnv::FnvHashMap;
 use graphql_ir::{FragmentDefinition, OperationDefinition};
@@ -17,8 +17,9 @@ use intern::string_key::StringKey;
 use relay_transforms::{
     Programs, RefetchableDerivedFromMetadata, SplitOperationMetadata,
     CLIENT_EDGE_GENERATED_FRAGMENT_KEY, CLIENT_EDGE_QUERY_METADATA_KEY, CLIENT_EDGE_SOURCE_NAME,
-    DIRECTIVE_SPLIT_OPERATION,
+    DIRECTIVE_SPLIT_OPERATION, is_operation_preloadable,
 };
+use signedsource::{SIGNING_TOKEN, sign_file};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -41,7 +42,7 @@ pub fn generate_artifacts(
     let mut operation_printer = OperationPrinter::new(&programs.operation_text);
     return group_operations(programs)
         .into_iter()
-        .map(|(_, operations)| -> Artifact {
+        .map(|(_, operations)| -> Vec<Artifact> {
             if let Some(directive) = operations
                 .normalization
                 .directives
@@ -61,7 +62,7 @@ pub fn generate_artifacts(
                     None
                 };
 
-                Artifact {
+                vec![Artifact {
                     source_definition_names: metadata.parent_documents.into_iter().collect(),
                     path: path_for_artifact(
                         project_config,
@@ -74,7 +75,7 @@ pub fn generate_artifacts(
                         source_hash,
                     },
                     source_file,
-                }
+                }]
             } else if let Some(derived_from_metadata) =
                 RefetchableDerivedFromMetadata::find(&operations.normalization.directives)
             {
@@ -141,6 +142,7 @@ pub fn generate_artifacts(
                 )
             }
         })
+        .flatten()
         .chain(programs.reader.fragments().map(|reader_fragment| {
             let source_name = if let Some(client_edges_directive) = reader_fragment
                 .directives
@@ -163,6 +165,18 @@ pub fn generate_artifacts(
         .collect();
 }
 
+pub fn create_derived_artifact(source_artifact: &Artifact, path: PathBuf, unsigned_content: String) -> Artifact {
+    let signed_content = sign_file(&unsigned_content);
+    Artifact {
+        content: ArtifactContent::Generic {
+            content: signed_content.as_bytes().into(),
+        },
+        path,
+        source_definition_names: source_artifact.source_definition_names.clone(),
+        source_file: source_artifact.source_file,
+    }
+}
+
 fn generate_normalization_artifact(
     operation_printer: &mut OperationPrinter<'_>,
     source_definition_name: StringKey,
@@ -170,9 +184,9 @@ fn generate_normalization_artifact(
     operations: &OperationGroup<'_>,
     source_hash: String,
     source_file: SourceLocationKey,
-) -> Artifact {
+) -> Vec<Artifact> {
     let text = operation_printer.print(operations.expect_operation_text());
-    Artifact {
+    let primary_artifact = Artifact {
         source_definition_names: vec![source_definition_name],
         path: path_for_artifact(
             project_config,
@@ -188,7 +202,26 @@ fn generate_normalization_artifact(
             id_and_text_hash: None,
         },
         source_file: operations.normalization.name.location.source_location(),
+    };
+
+    let mut artifacts = vec![];
+
+    // FB has a custom version of $Parameters.js
+    if cfg!(not(feature = "fb_only")) && is_operation_preloadable(operations.normalization) {
+        artifacts.push(create_derived_artifact(
+            &primary_artifact,
+            create_path_for_artifact(
+                project_config,
+                source_file,
+                format!("{}$Parameters.js", operations.normalization.name.item),
+            ),
+            format!("{}\ntest", SIGNING_TOKEN),
+        ));
     }
+
+    artifacts.push(primary_artifact);
+
+    artifacts
 }
 
 fn generate_reader_artifact(
