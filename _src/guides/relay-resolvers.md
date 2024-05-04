@@ -13,13 +13,30 @@ keywords:
 import DocsRating from '@site/src/core/DocsRating';
 import {FbInternalOnly} from 'docusaurus-plugin-internaldocs-fb/internal';
 
-Relay Resolvers is an experimental Relay feature which enables modeling derived state as client-only fields in Relay’s GraphQL graph. Similar to server [resolvers](https://graphql.org/learn/execution/), a Relay Resolver is a function which defines how to compute the value of a GraphQL field. However, unlike server resolvers, Relay Resolvers are evaluated reactively on the client. A Relay Resolver reads fields off of its parent object and returns a derived result. If any of those fields change, Relay will automatically reevaluate the resolver.
+Relay Resolvers are an experimental Relay feature which enables modeling derived state as client-only fields in Relay’s GraphQL graph. Similar to server [resolvers](https://graphql.org/learn/execution/), a Relay Resolver is a function which defines how to compute the value of a GraphQL field. However, unlike server resolvers, Relay Resolvers are evaluated reactively on the client. A Relay Resolver reads fields off of its parent object and returns a derived result. If any of those fields change, Relay will automatically reevaluate the resolver.
 
 Relay Resolvers are particularly valuable in apps which store client state in Relay via [client schema extensions](https://relay.dev/docs/guides/client-schema-extensions/), since they allow you to compose together client data, server data — and even other Relay Resolver fields — into fields which update reactively as the underlying data changes.
 
 Relay Resolvers were originally conceived of as an alternative to Flux-style [selectors](https://redux.js.org/usage/deriving-data-selectors) and can be thought of as providing similar capabilities.
 
 Concretely, Relay Resolvers are defined as functions annotated with a special docblock syntax. The Relay compiler will automatically recognize these docblocks in any JavaScript file and use them to extend the schema that is available within your project.
+
+## Defining a Resolver
+
+For Relay Resolvers we are using a special syntax to define a new field:
+
+The string after @RelayResolver is a GraphQL `TypeName` separated by a dot from the GraphQL field
+defintion: https://spec.graphql.org/June2018/#FieldDefinition (Description and directives of the field are not supported).
+
+```js
+/**
+* @RelayResolver TypeName.fieldName(arg1: ArgTypeName): FieldTypeName
+*/
+```
+
+## Examples
+
+Note: In provided examples we're using Flow-type annotations, but Relay resolvers can also work with plain JavaScript, and TypeScript.
 
 Let’s look at an example Relay Resolver:
 
@@ -29,15 +46,12 @@ import {graphql} from 'relay-runtime';
 import {readFragment} from 'relay-runtime/store/ResolverFragments';
 
 /**
- * @RelayResolver
- *
- * @onType User
- * @fieldName greeting
+ * @RelayResolver User.greeting: String
  * @rootFragment UserGreetingResolver
  *
  * A greeting for the user which includes their name and title.
  */
-export default function userGreetingResolver(userKey: UserGreetingResolver$key): string {
+export function greeting(userKey: UserGreetingResolver$key): string {
   const user = readFragment(graphql`
     fragment UserGreetingResolver on User {
       honorific
@@ -64,32 +78,31 @@ function MyGreeting({userKey}) {
 
 ## Docblock Fields
 
-The Relay compiler looks for the following fields in any docblocks that includes `@RelayResolver`:
+The Relay compiler looks for the following fields in any docblocks that include `@RelayResolver`:
 
 - `@RelayResolver` (required)
-- `@onType` or `@onInterface` (required) The GraphQL type/interface on which the new field should be exposed
-- `@fieldName` (required) The name of the new field
-- `@rootFragment` (required) The name of the fragment read by `readFragment`
-- `@deprecated` (optional) Indicates that the field is [deprecated](https://spec.graphql.org/June2018/#sec--deprecated). May be optionally followed text giving the reason that the field is deprecated.
+- `@rootFragment` (optional) The name of the fragment read by `readFragment`
+- `@deprecated` (optional) Indicates that the field is [deprecated](https://spec.graphql.org/June2018/#sec--deprecated). May be optionally followed by text giving the reason that the field is deprecated.
 
 The docblock may also contain free text. This free text will be used as the field’s human-readable description, which will be surfaced in Relay’s editor support on hover and in autocomplete results.
 
-## Relay Resolver Signature
+## Relay Resolver Convetions
 
 In order for Relay to be able to call a Relay Resolver, it must conform to a set of conventions:
 
-1. The resolver function must accept a single argument, which is the key for its root fragment.
-2. The resolver function must be the default export of its module (only one resolver per module)
-3. The resolver must read its fragment using the special `readFragment` function.
-4. The resolver function must be pure
-5. The resolver’s return value must be immutable
+1. The resolver function must use a named export.
+2. The resolver must read its fragment using the special `readFragment` function.
+3. The resolver function must be pure.
+4. The resolver’s return value must be immutable.
 
 Unlike server resolvers, Relay Resolvers may return any JavaScript value. This includes classes, functions and arrays. However, we generally encourage having Relay Resolvers return scalar values and only returning more complex JavaScript values (like functions) as an escape hatch.
 
 <FbInternalOnly>
+
 ## Lint Rule
 
 In many cases, the contents of the docblock can be derived from the javascript implementation. In those cases, the [`relay-resolvers`](https://www.internalfb.com/eslint/relay-resolvers) ESLint rule rule will offer auto-fixes to derive the docblock from the implementation and ensure that the two remain in sync. The lint rule also enforces a naming convention for resolver function and modules names.
+
 </FbInternalOnly>
 
 ## How They Work
@@ -100,13 +113,13 @@ When the field is first read by a component, Relay will evaluate the Relay Resol
 
 ## Error Handling
 
-In order to make product code as robust as possible, Relay Resolvers follow the GraphQL spec’s documented [best practice](https://graphql.org/learn/best-practices/#nullability) of returning null when a field resolver errors. Instead of throwing, errors thrown by Relay Resolvers will be logged to your environment's configured `requiredFieldLogger` with an event of kind `"relay_resolver.error"`. If you make use of Relay Resolves you should be sure to configure your environment with a `requiredFieldLogger` which reports those events to whatever system you use for tracking runtime errors.
+In order to make product code as robust as possible, Relay Resolvers follow the GraphQL spec’s documented [best practice](https://graphql.org/learn/best-practices/#nullability) of returning null when a field resolver errors. Instead of throwing, errors thrown by Relay Resolvers will be logged to your environment's configured `relayFieldLogger` with an event of kind `"relay_resolver.error"`. If you make use of Relay Resolvers you should be sure to configure your environment with a `relayFieldLogger` which reports those events to whatever system you use for tracking runtime errors.
 
 If your component requires a non-null value in order to render, and can’t provide a reasonable fallback experience, you can annotate the field access with `@required`.
 
 ## Passing arguments to resolver fields
 
-For resolvers (and live resolvers) we support two ways of defining field arguments:
+For resolvers, we support two ways of defining field arguments:
 
 1. GraphQL: Arguments that are defined via @argumentDefinitions on the resolver's fragment.
 2. JS Runtime: Arguments that can be passed directly to the resolver function.
@@ -119,20 +132,18 @@ Let’s look at the example 1:
 
 ```js
 /**
-* @RelayResolver
-* @fieldName **my_resolver_field**
-* @onType **MyType**
+* @RelayResolver MyType.my_resolver_field: String
 * @rootFragment myResolverFragment
 */
-function myResolver(key) {
+export function my_resolver_field(fragmentKey: myResolverFragment$key): ?string {
    const data = readFragment(graphql`
        fragment myResolverFragment on MyType
-            @argumentDefinitions(**my_arg**: {type: "Float!"}) {
+            @argumentDefinitions(my_arg: {type: "Float!"}) {
             field_with_arg(arg: $my_arg) {
                __typename
             }
        }
-   `, key);
+   `, fragmentKey);
 
    return data.field_with_arg.__typename;
 }
@@ -165,12 +176,16 @@ You can define these fragments using GraphQL’s [Schema Definition Language](ht
 
 ```js
 /**
-* @RelayResolver
-* @fieldName **my_resolver_field(my_arg: String, my_other_arg: Int)**
-* @onType **MyType**
+* @RelayResolver MyType.my_resolver_field(my_arg: String, my_other_arg: Int): String
 * @rootFragment myResolverFragment
 */
-function myResolver(key, args) {
+export function my_resolver_field(
+   fragmentKey: myResolverFragment$key,
+   args: {
+      my_arg: ?string,
+      my_other_arg: ?number
+   },
+): ?string {
    if (args.my_other_arg === 0) {
        return "The other arg is 0";
    }
@@ -179,7 +194,8 @@ function myResolver(key, args) {
        fragment myResolverFragment on MyType
            some_field
        }
-   `, key);
+   `, fragmentKey);
+
    return data.some_field.concat(args.my_arg);
 }
 ```
@@ -206,20 +222,23 @@ We can also combine both of these approaches and define field arguments both on 
 
 ```js
 /**
-* @RelayResolver
-* @fieldName **my_resolver_field(my_js_arg: String)**
-* @onType **MyType**
+* @RelayResolver MyType.my_resolver_field(my_js_arg: String!): String
 * @rootFragment myResolverFragment
 */
-function myResolver(key, args) {
+export function my_resolver_field(
+   fragmentKey: myResolverFragment$key,
+   args: {
+      my_js_arg: string
+   },
+): ?string {
    const data = readFragment(graphql`
        fragment myResolverFragment on MyType
-            @argumentDefinitions(**my_gql_arg**: {type: "Float!"}) {
+            @argumentDefinitions(my_gql_arg: {type: "Float!"}) {
             field_with_arg(arg: $my_arg) {
                __typename
             }
        }
-   `, key);
+   `, fragmentKey);
 
    return `Hello ${args.my_js_arg}, ${data.field_with_arg.__typename}`;
 }
